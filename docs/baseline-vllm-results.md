@@ -1,5 +1,10 @@
 # vLLM baseline: measured numbers and what they mean
 
+> **Hardware: NVIDIA RTX 3060 12GB (Ampere, sm_86).** Every number in this file
+> was measured on the RTX 3060, run by a collaborator on his own box. We keep it
+> as a cross-hardware comparison baseline against the current RTX 4060 Ti 8GB
+> (Ada, sm_89) runs. Do not relabel these as 4060 Ti numbers.
+
 Task 2 results and their interpretation, on the same Vast.ai RTX 3060 as the HF
 control. The whole point of this task is the gap against `baseline-hf-results.md`:
 identical model, prompt, token count, batch, and decoding, only the engine

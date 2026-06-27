@@ -30,7 +30,7 @@ memory at each checkpoint already is the peak at that context length. We pay for
 the longest run once instead of regenerating from zero at every step, snapshot at
 each checkpoint, and catch the OOM in the same loop.
 
-Usage (Environment A, the HF venv with torch 2.12):
+Usage (Environment A, the HF venv with the box's preinstalled torch):
     python scripts/oom_sweep.py \
         --model Qwen/Qwen2.5-1.5B \
         --prompt-tokens 32 \
@@ -280,17 +280,26 @@ def _maybe_plot(rows, oom_seq, weights_vram, args) -> None:
     predicted = [r["predicted_mib"] for r in finite]
     measured = [r["measured_reserved_mib"] for r in finite]
 
+    # detect the card so the plot labels itself instead of hardcoding one GPU.
+    # this matters because the same script runs on the 3060 (the original
+    # comparison baseline) and on the 4060 Ti (the current box).
+    dev_idx = torch.device(args.device).index or 0
+    props = torch.cuda.get_device_properties(dev_idx)
+    card_name = props.name
+    card_total_mib = props.total_memory / (1024**2)
+    card_gb = round(card_total_mib / 1024)
+
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(seq, predicted, "--", label="predicted: weights + analytical KV", color="tab:blue")
     ax.plot(seq, measured, "-o", label="measured peak reserved", color="tab:red", markersize=3)
-    ax.axhline(12288, color="gray", ls=":", lw=1, label="12 GB card")
+    ax.axhline(card_total_mib, color="gray", ls=":", lw=1, label=f"{card_gb} GB card")
     if oom_seq is not None:
         ax.axvline(oom_seq, color="black", ls="-.", lw=1, label=f"OOM ~{oom_seq} tok")
 
     ax.set_xlabel("context length (tokens)")
     ax.set_ylabel("GPU memory (MiB)")
     ax.set_title(
-        "KV cache hits the wall: Qwen2.5-1.5B fp16, RTX 3060 12GB, HF transformers\n"
+        f"KV cache hits the wall: Qwen2.5-1.5B fp16, {card_name} {card_gb}GB, HF transformers\n"
         "grown by decode (1 token/step), so peak = weights + KV + tiny constant"
     )
     ax.legend(loc="upper left", fontsize=8)

@@ -1,5 +1,10 @@
 # HF baseline: measured numbers and what they mean
 
+> **Hardware: NVIDIA RTX 3060 12GB (Ampere, sm_86).** Every number in this file
+> was measured on the RTX 3060, run by a collaborator on his own box. We keep it
+> as a cross-hardware comparison baseline against the current RTX 4060 Ti 8GB
+> (Ada, sm_89) runs. Do not relabel these as 4060 Ti numbers.
+
 Task 1 results and their interpretation, on the Vast.ai RTX 3060. This is the
 control every later number is measured against. The raw rows are in
 `results/baseline_hf.csv`; this file is the reading of them.
