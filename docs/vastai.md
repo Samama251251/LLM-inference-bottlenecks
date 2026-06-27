@@ -1,65 +1,60 @@
-# Environment and plan changes (Vast.ai RTX 4060 Ti box)
+# Environment and plan changes (Vast.ai RTX 3070 Ti box)
 
 Read alongside CLAUDE.md and phase1.md. This file records the actual compute we landed on and what it changes versus the original Colab-based plan. Where this file and CLAUDE.md disagree on hardware, this file wins.
 
-## Two boxes, on purpose
+## Three cards, on purpose
 
-- Current box (ours): one RTX 4060 Ti 8GB. All new Phase 1 measurements run here.
-- Earlier box (collaborator): one RTX 3060 12GB. A collaborator ran the first HF baseline, vLLM baseline, and OOM sweep there. We keep those results (`docs/baseline-hf-results.md`, `docs/baseline-vllm-results.md`, and the committed OOM plot) as a cross-hardware comparison baseline: Ampere 12GB vs Ada 8GB, same model and method. Those numbers stay labeled as 3060. Do not relabel them.
+All single-GPU, same model and method, kept for a cross-hardware comparison:
+
+- RTX 3060 12GB (collaborator's box): the first HF baseline, vLLM baseline, and OOM sweep. Results in `docs/baseline-hf-results.md`, `docs/baseline-vllm-results.md`, and the committed OOM plot. Labeled 3060, never relabel.
+- RTX 4060 Ti 8GB (now deleted): a second set of runs. Results under `results/rtx4060ti/` if they were pushed before the box was destroyed.
+- RTX 3070 Ti 8GB (current box): all new runs go under `results/rtx3070ti/`.
+
+The 3070 Ti vs the 4060 Ti is the cleanest controlled pair: same 8GB, near-identical fp32 compute (~21-22 TFLOPS), but the 3070 Ti has ~2x the memory bandwidth (~608 GB/s GDDR6X vs 288 GB/s GDDR6). Decode is memory-bound, so expect decode ~2x faster on the 3070 Ti while prefill stays about the same. That contrast is itself a result worth plotting.
 
 ## What changed: compute and workflow
 
-- We are no longer using Colab. Phase 1 runs on a rented Vast.ai box: one RTX 4060 Ti 8GB, on-demand, about $0.095/hr, located in Canada (instance 42824740).
-- Workflow is "Claude Code on the box," not local-first. Claude Code runs over SSH directly on the rented machine, so it edits, runs on the GPU, reads tracebacks, and commits all in one place. No git push/pull loop between a laptop and the runner.
-- Persistent working directory is `/workspace`. Storage is billed while the instance is stopped, so the repo and the weights cache live in `/workspace`, not in `/root` or `/tmp`. Disk is only 32GB, so be deliberate about the weights cache. Destroy the instance when done for the week.
+- We are no longer using Colab. Phase 1 runs on a rented Vast.ai box: one RTX 3070 Ti 8GB, on-demand, about $0.116/hr, located in South Korea (instance 42841519).
+- Workflow is "Claude Code on the box," not local-first: edit, run on the GPU, read tracebacks, and commit in one place.
+- Persistent working directory is `/workspace`. Storage is billed while stopped and a destroy wipes `/workspace` (the previous 4060 Ti box was destroyed, taking its local state). So push results to GitHub after every run. The repo is the durable artifact.
 
 ## Box specs (from the Vast.ai listing, confirm on the box)
 
-- GPU: NVIDIA GeForce RTX 4060 Ti, 8GB (8192 MiB).
-- Architecture: Ada Lovelace, compute capability 8.9 (sm_89). Adds fp8 over Ampere.
-- Compute: ~22 fp32 TFLOPS. Memory bandwidth ~288 GB/s spec (the listing shows 233.1 GB/s; verify on the box, since decode is memory-bound and this number sets the decode ceiling).
-- Image: `vastai/pytorch_cuda-12.4.1-auto/jupyter`, Max CUDA 12.4. torch is preinstalled for CUDA 12.4; verify the exact torch version on the box (it is NOT the old NGC torch 2.12+cu130).
-- Host: 11th Gen Intel Core i7-11700 (16 vCPU), 64GB RAM, 32GB disk, Z590 board, PCIE 4.0/8x.
+- GPU: NVIDIA GeForce RTX 3070 Ti, 8GB (GDDR6X).
+- Architecture: Ampere GA104, compute capability 8.6 (sm_86).
+- Compute: ~21.7 fp32 TFLOPS. Memory bandwidth ~608 GB/s spec (256-bit, 19 Gbps GDDR6X); the listing shows 523.8 GB/s, verify on the box since decode is memory-bound and this sets the decode ceiling.
+- Image: `vastai/pytorch_cuda-13.0.3-auto/jupyter`, Max CUDA 13.0. torch is preinstalled for CUDA 13.0; verify the exact torch version on the box.
+- Host: Xeon E5-2680 v4 (Broadwell, 14 of 28 vCPU), 32GB RAM, 32GB disk, PCIE 3.0/8x. Older CPU than the 4060 Ti box's i7-11700, so HF eager decode may carry more host overhead here; watch the MBU.
 - NOT preinstalled: transformers, vllm, accelerate. These are ours to add.
 - Network: HuggingFace and GitHub both reachable, so weight downloads and git push both work.
 
-## What this changes in phase1.md
+## On startup, verify the GPU is idle before measuring
 
-1. The vLLM attention-backend worry is resolved in our favor. phase1.md warned that a Turing T4 (sm_75) might force vLLM into a fallback backend. On Ada sm_89 that does not apply: FlashAttention and vLLM's good kernels support this card. Delete that worry.
+The marketplace listing can show the card busy while the auto-image initializes. Before any run, confirm `nvidia-smi` shows ~0% util and only a few MiB used, otherwise a stray process pollutes the measurement.
 
-2. The CUDA-stack friction is lower than on the old 3060 box. That box had torch 2.12+cu130, newer than what vLLM bundled, so a naive install would clobber it. This box is CUDA 12.4, which is vLLM's mainstream wheel target, so a fresh-env cu124 install is the well-trodden path.
+## Concrete steps (two environments, on purpose)
 
-   Rule still holds: install vLLM in a separate fresh virtual environment and let the wheel bring its own torch. Do not try to make vLLM reuse the system torch (that path means building from source).
-
-3. fp16 still stands. This card supports bf16 and fp8, unlike the T4 and V100. We still target fp16, both for comparability with the later NUST HPC V100/T4 runs and the 3060 baseline, and because it does not change the KV-cache OOM math (fp16 and bf16 are both 2 bytes per element).
-
-4. OOM math on 8GB. A 1.5B model in fp16 is about 3GB of weights, leaving roughly 5GB for the KV cache to grow into, versus ~9GB on the 3060 baseline. The OOM cliff lands notably sooner, which makes the sweep faster and cheaper and gives a clean two-card comparison of where the wall falls.
-
-## Concrete next steps (two environments, on purpose)
-
-Environment A, the HF baseline. Use the existing preinstalled-torch environment. Only add:
+Environment A, the HF baseline:
 
 ```
-pip install transformers accelerate
-export HF_HOME=/workspace/hf-cache   # cache weights on persistent storage
+export HF_HOME=/workspace/hf-cache
+pip install -r requirements.txt
+mkdir -p results/rtx3070ti
 ```
 
-Build and validate the baseline harness here (Task 1 in phase1.md). This path has no version drama, so it should be a clean first win.
-
-Environment B, the vLLM run. Create a fresh, isolated environment so it cannot disturb Environment A:
+Environment B, the vLLM run, in an isolated venv so it cannot disturb A:
 
 ```
 python -m venv /workspace/vllm-env
 source /workspace/vllm-env/bin/activate
-# install vLLM and let it pull its own matching torch for CUDA 12.4
-# (uv is the recommended installer; uv pip install vllm --torch-backend=cu124)
-pip install vllm
+pip install uv
+uv pip install vllm --torch-backend=auto    # auto matches the box's CUDA (13.0 here)
+export HF_HOME=/workspace/hf-cache
 ```
 
-Run the vLLM benchmark (Task 2) from Environment B. Same model, same prompt, same max tokens, batch size 1, so the comparison against Environment A stays fair.
+Same model, prompt, max tokens, and batch 1 across both, so the comparison stays fair.
 
 ## One tooling note
 
 Claude Code needs Node, which the image likely does not include. If `node --version` fails, install a current Node first, then `npm install -g @anthropic-ai/claude-code`. Set git identity (`git config --global user.name` / `user.email`) so commits from the box are attributed correctly.
 </content>
-</invoke>

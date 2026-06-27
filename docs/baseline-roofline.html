@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HF baseline on the roofline: Qwen2.5-1.5B fp16, RTX 4060 Ti</title>
+<style>
+  :root{
+    --bg:#0b0e14;
+    --panel:#11151f;
+    --panel-2:#161b27;
+    --ink:#e8edf6;
+    --muted:#8b97ad;
+    --line:#242c3d;
+    --compute:#f5a524;   /* amber: compute side */
+    --memory:#3bc9db;    /* cyan: memory side  */
+    --prefill:#f5a524;
+    --decode:#3bc9db;
+    --accent:#a78bfa;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:
+      radial-gradient(1200px 600px at 80% -10%, #161d2e 0%, transparent 60%),
+      var(--bg);
+    color:var(--ink);font-family:var(--sans);line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1040px;margin:0 auto;padding:48px 24px 80px}
+  header.lead{border-left:3px solid var(--accent);padding-left:18px;margin-bottom:36px}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:26px;margin:.3em 0 .25em;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:15px;max-width:70ch}
+  .sub code{font-family:var(--mono);font-size:.9em;color:var(--ink);background:var(--panel-2);padding:1px 6px;border-radius:5px}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 22px 12px;margin:26px 0}
+  .card h2{font-size:13px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+
+  /* chart */
+  .chartwrap{position:relative}
+  svg{width:100%;height:auto;display:block}
+  .axislabel{fill:var(--muted);font-family:var(--mono);font-size:12px}
+  .tick{fill:var(--muted);font-family:var(--mono);font-size:11px}
+  .grid{stroke:var(--line);stroke-width:1}
+  .roof{fill:none;stroke-width:2.5}
+  .roof.bw{stroke:var(--memory)}
+  .roof.comp{stroke:var(--compute)}
+  .rooflabel{font-family:var(--mono);font-size:12px;font-weight:600}
+  .ridge{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 4;opacity:.6}
+  .dot{stroke:#0b0e14;stroke-width:2}
+  .dotlabel{font-family:var(--mono);font-size:13px;font-weight:700}
+  .dotsub{font-family:var(--mono);font-size:11px;fill:var(--muted)}
+  .drop{stroke-dasharray:2 3;stroke-width:1;opacity:.7}
+  .region{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+
+  /* metric grid */
+  .grid4{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:4px}
+  @media(min-width:760px){.grid4{grid-template-columns:repeat(4,1fr)}}
+  .metric{background:var(--panel-2);border:1px solid var(--line);border-radius:11px;padding:14px}
+  .metric .tag{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .metric .val{font-family:var(--mono);font-size:22px;font-weight:700;margin:6px 0 2px}
+  .metric .val.amber{color:var(--compute)} .metric .val.cyan{color:var(--memory)}
+  .metric .note{font-size:12.5px;color:var(--muted)}
+
+  /* two phase */
+  .phases{display:grid;grid-template-columns:1fr;gap:14px}
+  @media(min-width:760px){.phases{grid-template-columns:1fr 1fr}}
+  .phase{border:1px solid var(--line);border-radius:11px;padding:16px;background:var(--panel-2)}
+  .phase.pf{border-top:3px solid var(--compute)}
+  .phase.dc{border-top:3px solid var(--memory)}
+  .phase h3{margin:0 0 4px;font-size:15px}
+  .phase .lbl{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .phase p{font-size:13.5px;color:#c4ccdb;margin:8px 0 0}
+  .phase b{color:var(--ink)}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  td.num{font-family:var(--mono);color:var(--ink)}
+  td .means{color:var(--muted)}
+  .pill{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:999px}
+  .pill.c{background:rgba(245,165,36,.14);color:var(--compute)}
+  .pill.m{background:rgba(59,201,219,.14);color:var(--memory)}
+
+  footer{color:var(--muted);font-size:12.5px;margin-top:34px;font-family:var(--mono)}
+  .hl{color:var(--ink)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="lead">
+    <div class="kicker">Phase 1 / Week 1 / Task 1</div>
+    <h1>The HF baseline on the roofline</h1>
+    <p class="sub">One request is two computations with opposite bottlenecks.
+    Qwen2.5-1.5B in fp16, 512-token prompt, 256 decoded tokens, batch 1, plain
+    HuggingFace <code>transformers</code> on an RTX 4060 Ti 8GB. Every number
+    below is measured, from <code>results/rtx4060ti/baseline_hf.csv</code>.</p>
+  </header>
+
+  <div class="card">
+    <h2>Roofline (log-log, drawn to scale)</h2>
+    <div class="chartwrap"><svg id="roof" viewBox="0 0 960 540" role="img"
+      aria-label="Roofline plot placing prefill and decode"></svg></div>
+  </div>
+
+  <div class="card">
+    <h2>The four things the harness measures</h2>
+    <div class="grid4">
+      <div class="metric">
+        <div class="tag">Prefill latency / TTFT</div>
+        <div class="val amber">44.6 ms</div>
+        <div class="note">11,488 tok/s over the 512-token prompt. Compute-bound.</div>
+      </div>
+      <div class="metric">
+        <div class="tag">Decode rate / TPOT</div>
+        <div class="val cyan">70 tok/s</div>
+        <div class="note">14.3 ms/token. Memory-bound. 99% of the wall-clock.</div>
+      </div>
+      <div class="metric">
+        <div class="tag">Memory footprint</div>
+        <div class="val">3360 MiB</div>
+        <div class="note">peak reserved. Weights 2945 + KV (~21 MiB here) + overhead.</div>
+      </div>
+      <div class="metric">
+        <div class="tag">Utilization</div>
+        <div class="val cyan">~75%</div>
+        <div class="note">decode MBU (216 of 288 GB/s). Prefill ~40% of tensor peak.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Why two phases at all</h2>
+    <div class="phases">
+      <div class="phase pf">
+        <div class="lbl">Prefill &middot; one wide pass</div>
+        <h3>512 tokens at once</h3>
+        <p>Processes the whole prompt in a single forward pass. Each weight it
+        loads is reused across <b>512 tokens</b>, so the work per byte moved is
+        high: intensity <b>~511 FLOP/byte</b>. That lands it <b>right of the
+        ridge</b>, against the compute ceiling. More FLOPs (longer prompt, bigger
+        model) cost more time. This is the <b>TTFT</b> lever.</p>
+      </div>
+      <div class="phase dc">
+        <div class="lbl">Decode &middot; 255 skinny passes</div>
+        <h3>1 token at a time</h3>
+        <p>Autoregressive: each token needs the previous one, so it runs the pass
+        once per output token. At batch 1 it re-reads the <b>entire 3 GB of
+        weights to make a single token</b>: intensity <b>~1 FLOP/byte</b>. That
+        pins it to the bandwidth roof, far left. FLOPs are irrelevant here;
+        bytes/sec is everything. This is the <b>TPOT</b> lever, and it is what
+        batching attacks.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Reading your CSV row</h2>
+    <table>
+      <thead><tr><th>Field</th><th>Value</th><th>What it means</th></tr></thead>
+      <tbody>
+        <tr><td>prefill_seconds</td><td class="num">0.0446</td>
+          <td><span class="pill c">compute</span> <span class="means">TTFT. ~35 TFLOP/s achieved, above the 22 TFLOP/s FP32 peak, so tensor cores are engaged.</span></td></tr>
+        <tr><td>decode_tok/s</td><td class="num">70.0</td>
+          <td><span class="pill m">memory</span> <span class="means">14.3 ms/token. = 216 GB/s of weight reads, 75% of the 288 GB/s ceiling.</span></td></tr>
+        <tr><td>weights_vram_mib</td><td class="num">2945</td>
+          <td><span class="means">The clean fp16 floor (transformers 4.46 avoids the old rotary-buffer bloat). Every curve sits on this.</span></td></tr>
+        <tr><td>peak_allocated_mib</td><td class="num">3133</td>
+          <td><span class="means">Live tensors: weights + ~21 MiB KV (767 tokens) + activations. KV is invisible at this length.</span></td></tr>
+        <tr><td>peak_reserved_mib</td><td class="num">3360</td>
+          <td><span class="means">What the allocator grabbed from the card. This is the number that OOMs you when KV grows.</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    The 164x gap (11,488 vs 70 tok/s) is the same model on the same silicon,
+    set apart only by arithmetic intensity. <span class="hl">Inference is a
+    memory problem, not a FLOPs problem.</span> Next: grow KV until it OOMs
+    (predicted ~70k tokens), then run vLLM on the identical workload.
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  const svg = document.getElementById('roof');
+  const NS = "http://www.w3.org/2000/svg";
+  const W = 960, H = 540;
+  const m = {l:78, r:200, t:34, b:74};
+  const px0 = m.l, px1 = W - m.r, py0 = m.t, py1 = H - m.b;
+
+  // axis ranges (log10)
+  const xMin=0.1, xMax=10000;          // FLOP/byte
+  const yMin=1e10, yMax=2e14;          // FLOP/s  (0.01 .. 200 TFLOP/s)
+  const BW = 288e9;                    // bytes/sec  (288 GB/s)
+  const COMP = 88e12;                  // FLOP/s     (~fp16 tensor peak)
+  const ridge = COMP / BW;             // ~305 FLOP/byte
+
+  const lx=v=>Math.log10(v);
+  const X=v=> px0 + (lx(v)-lx(xMin))/(lx(xMax)-lx(xMin))*(px1-px0);
+  const Y=v=> py1 - (lx(v)-lx(yMin))/(lx(yMax)-lx(yMin))*(py1-py0);
+
+  function el(tag,attrs,txt){
+    const e=document.createElementNS(NS,tag);
+    for(const k in attrs) e.setAttribute(k,attrs[k]);
+    if(txt!=null) e.textContent=txt;
+    svg.appendChild(e); return e;
+  }
+
+  // region shading
+  el('rect',{x:px0,y:py0,width:X(ridge)-px0,height:py1-py0,fill:'#3bc9db',opacity:0.05});
+  el('rect',{x:X(ridge),y:py0,width:px1-X(ridge),height:py1-py0,fill:'#f5a524',opacity:0.05});
+
+  // grid + ticks
+  const xticks=[0.1,1,10,100,1000,10000];
+  xticks.forEach(t=>{
+    el('line',{x1:X(t),y1:py0,x2:X(t),y2:py1,class:'grid'});
+    el('text',{x:X(t),y:py1+18,'text-anchor':'middle',class:'tick'},
+       t<1?t.toString():t.toLocaleString());
+  });
+  const yticks=[1e10,1e11,1e12,1e13,1e14];
+  yticks.forEach(t=>{
+    el('line',{x1:px0,y1:Y(t),x2:px1,y2:Y(t),class:'grid'});
+    el('text',{x:px0-10,y:Y(t)+4,'text-anchor':'end',class:'tick'},(t/1e12)+'T');
+  });
+
+  // axis labels
+  el('text',{x:(px0+px1)/2,y:H-26,'text-anchor':'middle',class:'axislabel'},
+     'Arithmetic intensity  (FLOP / byte)');
+  const yl=el('text',{x:20,y:(py0+py1)/2,'text-anchor':'middle',class:'axislabel'},
+     'Achievable throughput  (TFLOP/s)');
+  yl.setAttribute('transform',`rotate(-90 20 ${(py0+py1)/2})`);
+
+  // roofline: bandwidth segment (slope 1) then flat compute
+  el('path',{class:'roof bw',d:`M ${X(xMin)} ${Y(BW*xMin)} L ${X(ridge)} ${Y(COMP)}`});
+  el('path',{class:'roof comp',d:`M ${X(ridge)} ${Y(COMP)} L ${X(xMax)} ${Y(COMP)}`});
+
+  // ridge marker
+  el('line',{x1:X(ridge),y1:Y(COMP),x2:X(ridge),y2:py1,class:'ridge'});
+  el('text',{x:X(ridge),y:py0-8,'text-anchor':'middle',class:'tick'},'ridge ~305');
+
+  // roof labels
+  el('text',{x:X(xMax)-6,y:Y(COMP)-10,'text-anchor':'end',class:'rooflabel',fill:'#f5a524'},
+     'compute ceiling ~88 TFLOP/s');
+  el('text',{x:X(3.2),y:Y(BW*3.2)-9,class:'rooflabel',fill:'#3bc9db',transform:`rotate(-31 ${X(3.2)} ${Y(BW*3.2)})`},
+     'bandwidth roof  288 GB/s');
+
+  // region captions
+  el('text',{x:X(3),y:py1-12,'text-anchor':'middle',class:'region',fill:'#3bc9db'},'memory-bound');
+  el('text',{x:X(2000),y:py1-12,'text-anchor':'middle',class:'region',fill:'#f5a524'},'compute-bound');
+
+  // ---- the two measured points ----
+  // decode: intensity ~1, achieved 216 GB/s * 1 = 0.216 TFLOP/s
+  const dI=1.0, dY=216e9;
+  el('line',{x1:X(dI),y1:Y(dY),x2:X(dI),y2:Y(BW*dI),class:'drop',stroke:'#3bc9db'});
+  el('circle',{cx:X(dI),cy:Y(dY),r:7,fill:'#3bc9db',class:'dot'});
+  el('text',{x:X(dI)+14,y:Y(dY)-2,class:'dotlabel',fill:'#3bc9db'},'DECODE');
+  el('text',{x:X(dI)+14,y:Y(dY)+14,class:'dotsub'},'~1 FLOP/byte, 75% MBU');
+
+  // prefill: intensity ~511, achieved ~35 TFLOP/s
+  const pI=511, pY=35e12;
+  el('line',{x1:X(pI),y1:Y(pY),x2:X(pI),y2:Y(COMP),class:'drop',stroke:'#f5a524'});
+  el('circle',{cx:X(pI),cy:Y(pY),r:7,fill:'#f5a524',class:'dot'});
+  el('text',{x:X(pI)+14,y:Y(pY)+4,class:'dotlabel',fill:'#f5a524'},'PREFILL');
+  el('text',{x:X(pI)+14,y:Y(pY)+20,class:'dotsub'},'~511 FLOP/byte, ~35 TFLOP/s');
+})();
+</script>
+</body>
+</html>
+</content>
