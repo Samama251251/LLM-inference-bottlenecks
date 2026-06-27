@@ -1,0 +1,2 @@
+engine,model,dtype,batch_size,prompt_tokens,new_tokens,prefill_seconds,decode_seconds,decode_tokens_per_sec,prefill_tokens_per_sec,weights_vram_mib,peak_allocated_mib,peak_reserved_mib,oom,note,gpu_name,torch_version,timestamp
+hf,Qwen/Qwen2.5-1.5B,float16,1,512,255,0.04752015508711338,8.345107211265713,30.556827317419668,10774.375610967762,2945.29052734375,3133.24462890625,3360.0,False,,NVIDIA GeForce RTX 3070 Ti,2.12.0+cu130,2026-06-27T10:33:27+00:00
