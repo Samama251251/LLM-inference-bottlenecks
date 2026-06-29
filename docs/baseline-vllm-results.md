@@ -2,8 +2,9 @@
 
 > **Hardware: NVIDIA RTX 3060 12GB (Ampere, sm_86).** Every number in this file
 > was measured on the RTX 3060, run by a collaborator on his own box. We keep it
-> as a cross-hardware comparison baseline against the current RTX 4060 Ti 8GB
-> (Ada, sm_89) runs. Do not relabel these as 4060 Ti numbers.
+> as a cross-hardware comparison baseline. The current box is the RTX 3070 Ti
+> 8GB (`baseline-vllm-results-rtx3070ti.md`). Do not relabel these 3060 numbers
+> as another card's.
 
 Task 2 results and their interpretation, on the same Vast.ai RTX 3060 as the HF
 control. The whole point of this task is the gap against `baseline-hf-results.md`:
