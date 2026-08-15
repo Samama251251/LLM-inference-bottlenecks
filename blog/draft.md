@@ -43,6 +43,75 @@ into; vLLM's 11237 MiB is a pool it reserves at startup (weights 3.0 GiB, KV poo
 the card. The two are not the same measurement, so the fair comparison is decode
 rate and prefill latency, not peak bytes.
 
+## I bought twice the bandwidth and decode got slower
+
+Decode is memory-bound, so a card with more memory bandwidth should decode
+faster. That is the prediction. I ran the same script on three cards to check it,
+and on the card with the most bandwidth it was wrong.
+
+| card | bandwidth | HF decode | HF MBU | vLLM decode | vLLM MBU | vLLM / HF |
+| --- | --- | --- | --- | --- | --- | --- |
+| RTX 3060 12GB | 360 GB/s | 20.6 tok/s | 17.7% | 79.9 tok/s | 68.5% | 3.88x |
+| RTX 4060 Ti 8GB | 288 GB/s | **70.1 tok/s** | 75.2% | 83.2 tok/s | 89.2% | 1.19x |
+| RTX 3070 Ti 8GB | **608 GB/s** | 30.6 tok/s | 15.5% | **152.0 tok/s** | 77.2% | 4.97x |
+
+Read the first two columns against each other. Ranked by bandwidth the order is
+3070 Ti, 3060, 4060 Ti. Ranked by HuggingFace decode speed it is 4060 Ti, 3070
+Ti, 3060. The slowest card on paper is the fastest one measured, and the 3070 Ti
+has 2.11x the bandwidth of the 4060 Ti while decoding at 0.44x its speed.
+
+Note these are the same 8GB of VRAM on both of those cards. Capacity is not the
+variable here and never affects decode speed; it only sets where the KV cache
+runs out. The variable is bandwidth, and more of it made things worse.
+
+Now change the engine and nothing else. Under vLLM the ranking snaps back to
+bandwidth order: 3070 Ti first, at 152 tok/s, almost exactly 2x the 4060 Ti's
+bandwidth-adjusted rate. The hardware was always capable of it. The baseline
+could not reach it.
+
+MBU is the column that explains the rest. Decode has to stream every weight once
+per token, which for this model in fp16 is 3.088 GB, so `tok/s = MBU x bandwidth
+/ 3.088 GB`. On the 4060 Ti, HuggingFace already runs at 75% of the memory
+bandwidth: the card is close to its ceiling and there is little left for a better
+engine to win, which is why vLLM buys only 1.19x there. On the 3070 Ti,
+HuggingFace runs at 15.5%. The 608 GB/s bus sits idle 85% of the time.
+
+What is it waiting for? The CPU. Eager HuggingFace decode re-enters Python for
+every token and walks all 28 layers, dispatching on the order of 500 separate
+kernels, each one preceded by interpreter work before the GPU sees anything. Per
+token that is 14.3 ms on the 4060 Ti box and 32.7 ms on the 3070 Ti box. The
+difference is not the graphics cards. It is that the 4060 Ti box has an i7-11700
+and the 3070 Ti box has a Xeon E5-2680 v4, a Broadwell part from 2016, and the
+2.29x gap in per-token time tracks the single-thread gap between those two CPUs
+far better than it tracks anything about the GPUs. The GPU finishes each tiny
+kernel and then waits for Python to hand it the next one.
+
+So there are two different walls, and "memory-bound" only names one of them.
+Memory-bound is the nature of the decode workload: its ceiling is set by
+bandwidth. But you only meet that ceiling if something keeps the GPU fed. Get
+there through a slow interpreter on a slow host and you hit the dispatch wall
+first, at 15% of the bandwidth wall, and buying a faster bus buys nothing at all.
+
+The cleanest evidence for that is the last column, because it holds the GPU
+fixed. Same card, same box, same CPU, only the engine changes. On the fast-host
+4060 Ti, switching to vLLM buys 1.19x. On the slow-host Xeon box it buys 4.97x.
+vLLM's batch-1 win is not a property of vLLM. It is a measurement of how much
+host overhead there was to remove, which is why the same swap pays four times
+better on the slower host.
+
+Two caveats I would rather state than bury. First, the two boxes differ in CPU
+and GPU and torch build at once, so the cross-card comparison on its own is
+confounded; the within-box vLLM ratio is what carries the causal claim, not the
+raw pair. Second, the ~500 kernels per token is an estimate from the model's
+layer count, not a profiled number, so the per-kernel arithmetic above is an
+order-of-magnitude argument rather than a measurement. Both are fixable with one
+profiled decode step, which is the next thing to run.
+
+The practical version, for anyone sizing a box: at batch 1 on an eager baseline,
+the host CPU can be worth more than the GPU. Check your MBU before you pay for
+bandwidth. If you are at 15%, a faster card will not help you and a better engine
+will give you 5x on the hardware you already own.
+
 ## The OOM curve
 
 <!-- The headline. Push context length up in steps, log peak VRAM at each step,

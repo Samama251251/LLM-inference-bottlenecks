@@ -179,6 +179,12 @@ class BenchResult:
     note: str = ""
 
     gpu_name: str = field(default_factory=lambda: _gpu_name())
+    # The host CPU is recorded because at batch 1 an eager decode loop is often
+    # limited by how fast the CPU can dispatch kernels, not by the GPU. Two boxes
+    # with the same card and different CPUs produce very different decode rates,
+    # so a row without its CPU cannot be interpreted after the fact.
+    cpu_model: str = field(default_factory=lambda: _cpu_model())
+    cpu_cores: int = field(default_factory=lambda: os.cpu_count() or 0)
     torch_version: str = field(default_factory=lambda: torch.__version__)
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -191,16 +197,62 @@ def _gpu_name() -> str:
     return "cpu"
 
 
+def _cpu_model() -> str:
+    """Host CPU model string, best effort across Linux and macOS.
+
+    Returns platform.processor() or "unknown" if neither path works, so a run on
+    an odd host still records something rather than crashing mid-benchmark.
+    """
+    try:
+        if platform.system() == "Linux":
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        elif platform.system() == "Darwin":
+            out = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+    except Exception:
+        pass
+    return platform.processor() or "unknown"
+
+
 def write_result(result: BenchResult, csv_path: str) -> None:
-    """Append a result row, writing the header if the file is new."""
+    """Append a result row, writing the header if the file is new.
+
+    If the file exists with a different set of columns (because BenchResult
+    gained or lost a field since it was written), we refuse to append. Appending
+    would silently write values under the wrong headers and quietly corrupt an
+    already-committed result set, which is worse than failing loudly.
+    """
     os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
     row = asdict(result)
+    fieldnames = list(row.keys())
     is_new = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
+
+    if not is_new:
+        with open(csv_path, newline="") as f:
+            existing = next(csv.reader(f), [])
+        if existing != fieldnames:
+            raise ValueError(
+                f"{csv_path} has columns {existing}, but this run produces "
+                f"{fieldnames}. Appending would misalign the data. Write to a new "
+                f"file, or migrate the old one, instead of mixing schemas."
+            )
+
     with open(csv_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         if is_new:
             writer.writeheader()
         writer.writerow(row)
+        # Explicit newline discipline: a run killed mid-append (an OOM sweep is
+        # the obvious case) must not leave a row without its line terminator, or
+        # the next run's header glues onto it and the file stops parsing.
+        f.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +286,9 @@ def print_env() -> None:
     print("=" * 60)
     print(f"python      {platform.python_version()}")
     print(f"torch       {torch.__version__}")
+    # The CPU is printed next to the GPU on purpose: at batch 1 the host is a
+    # first-class part of the measurement, not background detail.
+    print(f"cpu         {_cpu_model()} ({os.cpu_count()} logical cores)")
     print(f"cuda avail  {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"gpu         {torch.cuda.get_device_name(0)}")

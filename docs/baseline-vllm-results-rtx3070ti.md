@@ -62,33 +62,48 @@ replay with a single launch) and fuses kernels, so the CPU stops being the
 bottleneck and the GPU streams weights back to back. Per-token overhead drops
 from ~27.6 ms (HF) to ~1.5 ms (vLLM) on top of the same 5.08 ms weight read.
 
-The ~5x here is much larger than vLLM's batch-1 win would be on the 4060 Ti box
-(where HF was already at 75% MBU, leaving ~1.3x to recover). The win equals the
-host overhead removed, so a slow-host box shows a bigger vLLM advantage. That is
-itself a finding: vLLM's batch-1 decode edge is not a fixed multiplier, it scales
-with how launch-bound the baseline was.
+The ~5x here is much larger than vLLM's batch-1 win on the 4060 Ti box, which
+measured 1.19x (83.2 / 70.1): HF there was already at 75% MBU, so there was
+little overhead left to recover. The win equals the host overhead removed, so a
+slow-host box shows a bigger vLLM advantage. That is itself a finding: vLLM's
+batch-1 decode edge is not a fixed multiplier, it scales with how launch-bound
+the baseline was.
 
-### The bandwidth thesis, confirmed at equal MBU
+This is also the strongest causal evidence in the phase, because it holds the
+GPU fixed. Same card, same box, same CPU, only the engine changes. The
+cross-card comparisons all vary CPU and GPU and torch build together and are
+confounded; this one does not.
 
-You cannot compare HF-to-HF across the 8GB cards (different hosts confound it).
-But compare the two runs that both reach the ceiling:
+### The bandwidth thesis, measured vLLM to vLLM
+
+Both 8GB cards have a vLLM run, so the clean comparison is available directly
+and no stand-in is needed:
 
 ```
-4060 Ti HF:   75.1% MBU on 288 GB/s ->  70 tok/s
-3070 Ti vLLM: 77.2% MBU on 608 GB/s -> 152 tok/s
+4060 Ti vLLM: 89.2% MBU on 288 GB/s ->  83.2 tok/s
+3070 Ti vLLM: 77.2% MBU on 608 GB/s -> 152.0 tok/s
 
-throughput ratio = 152 / 70 = 2.17x
-  bandwidth ratio = 608 / 288 = 2.11x
-  MBU ratio       = 77.2 / 75.1 = 1.03x
-  2.11 x 1.03     = 2.17  (exact)
+throughput ratio = 152.0 / 83.2 = 1.83x
+  bandwidth ratio = 608 / 288   = 2.11x
+  MBU ratio       = 77.2 / 89.2 = 0.87x
+  2.11 x 0.87     = 1.83  (exact)
 ```
 
-After normalizing the small MBU difference, decode throughput scales 2.11x,
-identical to the bandwidth ratio. That is "decode is memory-bound" measured, not
-asserted: once the engine keeps the GPU fed, decode speed tracks memory bandwidth
-one-to-one. The clean version (vLLM-to-vLLM across the two 8GB cards) is missing
-because the 4060 Ti box was destroyed before its vLLM run; the equal-MBU argument
-stands in for it.
+Decode throughput does not scale one-to-one with bandwidth here, and the reason
+is the MBU term. The 3070 Ti has 2.11x the bandwidth but converts less of it,
+reaching 77% MBU against the 4060 Ti's 89%, so the net gain is 1.83x rather than
+2.11x. The identity `tok/s = MBU x bandwidth / weight_bytes` closes exactly, which
+is the real content of the memory-bound claim: bandwidth sets the ceiling, MBU
+sets how much of it you actually get, and the engine plus the host decide MBU.
+
+The 4060 Ti reaching a higher MBU than the 3070 Ti under the same engine is
+consistent with the host-overhead story from the HF runs: even graph-replayed
+decode carries some per-token host work, and the faster i7-11700 leaves less of
+the bus idle than the Broadwell Xeon does.
+
+Note this comparison still crosses two boxes, so CPU and GPU and torch build vary
+together. The within-box engine comparison above is the controlled one; this is
+the arithmetic that reconciles the two cards, not an independent proof.
 
 ## VRAM: a reserved pool, read via NVML, not comparable to HF
 
@@ -111,11 +126,13 @@ matters only for the OOM contrast and for throughput under load.
   replacing ~500 per-token kernel launches with one CUDA-graph replay plus fused
   kernels. The card did not change; the CPU stopped being the bottleneck.
 - **vLLM's batch-1 decode win is not a fixed multiplier, it equals the host
-  overhead removed.** Slow-host boxes show bigger wins: ~5x here vs a
-  hypothetical ~1.3x on the fast-host 4060 Ti (where HF was already at 75% MBU).
-- **Decode throughput scales with bandwidth at equal MBU** (2.11x measured =
-  2.11x bandwidth ratio). This is the memory-bound thesis confirmed, once the
-  engine keeps the GPU fed.
+  overhead removed.** Slow-host boxes show bigger wins: 4.97x here vs a measured
+  1.19x on the fast-host 4060 Ti (where HF was already at 75% MBU). Because this
+  comparison changes only the engine on a fixed card, it is the controlled
+  version of the host-overhead claim.
+- **Decode throughput scales with bandwidth only after correcting for MBU**
+  (1.83x measured = 2.11x bandwidth x 0.87x MBU). Bandwidth sets the ceiling;
+  MBU decides how much of it the engine and host actually convert.
 - **Prefill barely moves (~1.1x).** Both engines call the same cuBLAS GEMMs;
   there is no matmul to beat, only launch overhead to trim.
 - **vLLM VRAM is a pre-grabbed pool, not comparable to HF organic growth.**
@@ -126,12 +143,16 @@ matters only for the OOM contrast and for throughput under load.
 
 ## What carries into the next tasks
 
-- The 3070 Ti HF-vs-vLLM headline: ~1.1x prefill, ~5x decode, MBU 15.5% -> 77%.
-  The 5x (vs the 3060's ~4x and a hypothetical ~1.3x on the 4060 Ti) is the
+- The 3070 Ti HF-vs-vLLM headline: ~1.1x prefill, 4.97x decode, MBU 15.5% -> 77%.
+  The 4.97x (vs the 3060's 3.88x and the 4060 Ti's measured 1.19x) is the
   host-overhead effect made visible.
 - vLLM's 152 tok/s is the realistic ceiling on this card (~77% MBU); the 197
   theoretical floor (100% MBU) is unreachable. Decode cannot beat the 5.08 ms
   weight-read time per token.
-- Missing for an airtight cross-card bandwidth comparison: a 4060 Ti vLLM run.
-  If another 8GB card is ever spun up, run vLLM on it to get vLLM-to-vLLM at
-  equal MBU directly.
+- Still missing for an airtight causal claim: a run that varies the CPU with the
+  GPU held constant. The within-box engine swap (1.19x on the fast host vs 4.97x
+  on the slow one) is strong circumstantial evidence, but every cross-card row
+  here changes CPU and GPU and torch build at once. Two boxes with the same card
+  and deliberately different CPUs would settle it, as would an eager-vs-CUDA-graph
+  comparison on one card, which removes dispatch overhead with the hardware fully
+  fixed.
