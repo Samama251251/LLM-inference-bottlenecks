@@ -33,7 +33,8 @@ Usage (from Environment B, the vLLM venv):
         --model Qwen/Qwen2.5-1.5B \
         --prompt-tokens 512 \
         --new-tokens 256 \
-        --gpu-mem-util 0.9
+        --gpu-mem-util 0.9 \
+        --csv results/rtx4060ti/baseline_vllm.csv
 """
 
 from __future__ import annotations
@@ -91,7 +92,8 @@ def main() -> None:
     parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B")
     parser.add_argument("--prompt-tokens", type=int, default=512)
     parser.add_argument("--new-tokens", type=int, default=256)
-    parser.add_argument("--csv", default="results/baseline_vllm.csv")
+    parser.add_argument("--csv", required=True,
+                        help="where to append the row, e.g. results/rtx4060ti/baseline_vllm.csv")
     parser.add_argument(
         "--gpu-mem-util",
         type=float,

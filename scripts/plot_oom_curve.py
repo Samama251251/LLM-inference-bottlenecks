@@ -63,7 +63,7 @@ CARD_GIB = {
 def load_rows(path: str) -> list[dict]:
     """Read the sweep CSV, repairing the one known corruption in place.
 
-    results/baseline_hf.csv was committed with its header glued to the first data
+    results/rtx3060/baseline_hf.csv was committed with its header glued to the first data
     row (a run killed before its newline landed). The same failure can hit a
     sweep CSV, so the reader tolerates it rather than dying on a stale file.
     """

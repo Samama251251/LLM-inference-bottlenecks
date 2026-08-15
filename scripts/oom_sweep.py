@@ -35,7 +35,9 @@ Usage (Environment A, the HF venv with the box's preinstalled torch):
         --model Qwen/Qwen2.5-1.5B \
         --prompt-tokens 32 \
         --checkpoint-every 1000 \
-        --max-tokens 200000
+        --max-tokens 200000 \
+        --csv results/rtx4060ti/oom_sweep.csv \
+        --plot results/rtx4060ti/oom_curve.png
 """
 
 from __future__ import annotations
@@ -105,8 +107,10 @@ def main() -> None:
         help="Safety cap so the loop terminates even if the card somehow never "
         "OOMs. We expect to hit the wall well before this.",
     )
-    parser.add_argument("--csv", default="results/oom_sweep.csv")
-    parser.add_argument("--plot", default="results/oom_curve.png")
+    parser.add_argument("--csv", required=True,
+                        help="where to append rows, e.g. results/rtx4060ti/oom_sweep.csv")
+    parser.add_argument("--plot", required=True,
+                        help="where to write the figure, e.g. results/rtx4060ti/oom_curve.png")
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
 

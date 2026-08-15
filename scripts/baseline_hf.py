@@ -15,7 +15,8 @@ Usage:
     python scripts/baseline_hf.py \
         --model Qwen/Qwen2.5-1.5B \
         --prompt-tokens 512 \
-        --new-tokens 256
+        --new-tokens 256 \
+        --csv results/rtx4060ti/baseline_hf.csv
 """
 
 from __future__ import annotations
@@ -80,7 +81,8 @@ def main() -> None:
     parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B")
     parser.add_argument("--prompt-tokens", type=int, default=512)
     parser.add_argument("--new-tokens", type=int, default=256)
-    parser.add_argument("--csv", default="results/baseline_hf.csv")
+    parser.add_argument("--csv", required=True,
+                        help="where to append the row, e.g. results/rtx4060ti/baseline_hf.csv")
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
 

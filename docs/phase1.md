@@ -1,5 +1,17 @@
 # Phase 1: baseline, vLLM, and the KV-cache OOM experiment
 
+> **Status, and a note on hardware.** This is the original task breakdown,
+> written when the plan was to run on a Colab T4. It is kept as the record of
+> intent. The work actually ran on three rented Vast.ai boxes (RTX 3060 12GB,
+> RTX 4060 Ti 8GB, RTX 3070 Ti 8GB), all since destroyed. Where this file says
+> "T4" or "16GB", read the card table in `README.md` instead.
+>
+> Tasks 0 through 3 are complete on at least one card. Two experiments were
+> added that are not in this plan: a prefill efficiency sweep
+> (`scripts/prefill_sweep.py`, the compute-wall counterpart to the OOM sweep)
+> and a vLLM batching sweep (`scripts/bench_vllm_batch.py`). Results and
+> interpretation live in `docs/`, per card.
+
 Working plan for this phase. Hand this to Claude Code as the task breakdown. Persistent context and constraints live in `CLAUDE.md`; this file is the ordered set of things to build and the precise definitions to build them against.
 
 ## The goal in one paragraph
@@ -43,38 +55,38 @@ These are the rules every script follows. Most wrong inference numbers come from
 
 ## Task 0: scaffold the repo
 
-- [ ] Create the structure above. README states the phase goal and a one-command reproduce path.
-- [ ] `requirements.txt` with pinned versions. The vLLM / torch / CUDA version match is the main friction point of this phase, so pin deliberately and note the working combination in the README.
-- [ ] Start `blog/draft.md` now with a title and an empty "the OOM curve" section. Writing as you measure is the point.
+- [x] Create the structure above. README states the phase goal and a one-command reproduce path.
+- [x] `requirements.txt` with pinned versions. The vLLM / torch / CUDA version match is the main friction point of this phase, so pin deliberately and note the working combination in the README.
+- [x] Start `blog/draft.md` now with a title and an empty "the OOM curve" section. Writing as you measure is the point.
 
 ## Task 1: HuggingFace baseline (the control)
 
-- [ ] Load Qwen2.5-1.5B (or TinyLlama) in fp16 on the T4.
-- [ ] Build `bench_common.py`: the timing + VRAM + logging harness described above, written once and reused.
-- [ ] `baseline_hf.py`: warmup, then a measured run that records prefill latency, decode tokens/sec, and peak VRAM, and writes a row to `results/`.
-- [ ] Confirm the numbers are stable and sane across a couple of runs. This is the control, so it has to be boringly solid before vLLM is touched.
+- [x] Load Qwen2.5-1.5B (or TinyLlama) in fp16 on the T4.
+- [x] Build `bench_common.py`: the timing + VRAM + logging harness described above, written once and reused.
+- [x] `baseline_hf.py`: warmup, then a measured run that records prefill latency, decode tokens/sec, and peak VRAM, and writes a row to `results/`.
+- [x] Confirm the numbers are stable and sane across a couple of runs. This is the control, so it has to be boringly solid before vLLM is touched.
 
 Gotchas: count only generated tokens in the decode rate; synchronize before every timer read; the model weights are roughly 3GB in fp16, so log how much VRAM is weights vs how much grows during generation.
 
 ## Task 2: vLLM serving the same model
 
-- [ ] Install vLLM. Expect this to eat real time. Pin a version compatible with Colab's CUDA and torch. The T4 is compute capability 7.5: vLLM runs on it, but some optimized attention backends target newer GPUs, so it may fall back to a default backend. Note whatever combination works in the README.
-- [ ] Use vLLM's offline `LLM` class (in-process), not the HTTP server, for a clean single-process benchmark. Set `dtype="float16"` and a sensible `gpu_memory_utilization`.
-- [ ] `bench_vllm.py`: same model, same prompt, same `max_new_tokens`, same batch size 1, measured with the same harness logic.
-- [ ] Produce a comparison table (HF vs vLLM): decode tokens/sec, prefill latency, peak VRAM.
+- [x] Install vLLM. Expect this to eat real time. Pin a version compatible with Colab's CUDA and torch. The T4 is compute capability 7.5: vLLM runs on it, but some optimized attention backends target newer GPUs, so it may fall back to a default backend. Note whatever combination works in the README.
+- [x] Use vLLM's offline `LLM` class (in-process), not the HTTP server, for a clean single-process benchmark. Set `dtype="float16"` and a sensible `gpu_memory_utilization`.
+- [x] `bench_vllm.py`: same model, same prompt, same `max_new_tokens`, same batch size 1, measured with the same harness logic.
+- [x] Produce a comparison table (HF vs vLLM): decode tokens/sec, prefill latency, peak VRAM.
 
 Gotcha: vLLM pre-allocates a large KV-cache pool up front (controlled by `gpu_memory_utilization`), so its raw VRAM number is not directly comparable to HF's. Note what that number actually represents rather than comparing it naively.
 
 ## Task 3: the KV-cache OOM experiment (the headline)
 
-- [ ] Run this on the HF baseline path, since it is the transparent one and easiest to control.
-- [ ] `oom_sweep.py`: scale total sequence length up in steps. At each step, run a generation, record peak VRAM and decode tokens/sec.
-- [ ] Catch the CUDA out-of-memory error, record the context length at which it fails, and stop cleanly.
-- [ ] Compute the analytical KV-cache size at each step from the Phase 0 formula: `2 (K and V) x num_layers x num_kv_heads x head_dim x seq_len x dtype_bytes x batch`. 
-- [ ] Plot measured peak VRAM vs context length, with the analytical KV-cache prediction overlaid. The match between predicted and measured (and where they diverge) is the result.
-- [ ] Decide and document whether you grow the sequence via a long prompt (prefill) or long generation (decode). State the choice in the plot caption.
+- [x] Run this on the HF baseline path, since it is the transparent one and easiest to control.
+- [x] `oom_sweep.py`: scale total sequence length up in steps. At each step, run a generation, record peak VRAM and decode tokens/sec.
+- [x] Catch the CUDA out-of-memory error, record the context length at which it fails, and stop cleanly.
+- [x] Compute the analytical KV-cache size at each step from the Phase 0 formula: `2 (K and V) x num_layers x num_kv_heads x head_dim x seq_len x dtype_bytes x batch`. 
+- [x] Plot measured peak VRAM vs context length, with the analytical KV-cache prediction overlaid. The match between predicted and measured (and where they diverge) is the result.
+- [x] Decide and document whether you grow the sequence via a long prompt (prefill) or long generation (decode). State the choice in the plot caption.
 
-Output: `results/oom_curve.png` plus a short paragraph in the blog draft explaining the mechanism, written the moment the plot exists.
+Output: `results/<card>/oom_curve.png` plus a short paragraph in the blog draft explaining the mechanism, written the moment the plot exists.
 
 ## Task 4: reading (skim, do not deep-dive)
 

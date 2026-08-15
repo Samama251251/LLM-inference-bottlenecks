@@ -116,7 +116,7 @@ will give you 5x on the hardware you already own.
 
 <!-- The headline. Push context length up in steps, log peak VRAM at each step,
 catch the CUDA OOM, and plot measured VRAM against the analytical KV-cache
-prediction. Written the moment results/oom_curve.png exists. -->
+prediction. Written the moment results/rtx4060ti/oom_curve.png exists. -->
 
 ## Why the two engines differ
 

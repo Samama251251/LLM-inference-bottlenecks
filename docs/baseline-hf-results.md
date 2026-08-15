@@ -8,7 +8,7 @@
 
 Task 1 results and their interpretation, on the Vast.ai RTX 3060. This is the
 control every later number is measured against. The raw rows are in
-`results/baseline_hf.csv`; this file is the reading of them.
+`results/rtx3060/baseline_hf.csv`; this file is the reading of them.
 
 ## Setup
 

@@ -9,7 +9,7 @@
 Task 2 results and their interpretation, on the same Vast.ai RTX 3060 as the HF
 control. The whole point of this task is the gap against `baseline-hf-results.md`:
 identical model, prompt, token count, batch, and decoding, only the engine
-changed. The raw rows are in `results/baseline_vllm.csv`; this file is the
+changed. The raw rows are in `results/rtx3060/baseline_vllm.csv`; this file is the
 reading of them. Read alongside the HF baseline doc, since every number here is
 relative to that one.
 

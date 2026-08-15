@@ -361,7 +361,10 @@ def _report_sanity(args, batch_sizes: list[int]) -> None:
     thermal drift by the spread across repeats at each batch size."""
     if 1 not in batch_sizes:
         return
-    baseline_path = "results/baseline_vllm.csv"
+    # Look for the baseline next to this sweep's own CSV, so the cross-check
+    # compares against the same card rather than a hardcoded path that silently
+    # goes stale when results are filed per card.
+    baseline_path = os.path.join(os.path.dirname(args.csv), "baseline_vllm.csv")
     if not os.path.exists(baseline_path):
         return
     try:
