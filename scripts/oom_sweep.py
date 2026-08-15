@@ -257,56 +257,38 @@ def main() -> None:
 
 
 def _maybe_plot(rows, oom_seq, weights_vram, args) -> None:
-    """Plot measured VRAM vs context with the analytical KV line overlaid.
+    """Draw the figure by delegating to scripts/plot_oom_curve.py.
+
+    The plotting lives in one place, driven off the committed CSV, so the figure
+    a fresh clone regenerates is byte-for-byte the one this sweep produced. The
+    earlier version drew the plot inline from in-memory rows, which let the
+    committed figure drift away from the committed data: it plotted peak
+    reserved (which saturates once the allocator owns the card, so the curve went
+    flat for most of the x-axis) while the CSV also held peak allocated, the line
+    that actually tracks KV growth.
 
     Guarded by the matplotlib import: the CSV is the real artifact and is always
-    written above, so a box without matplotlib still produces the data and the
-    plot can be regenerated later from the CSV.
+    written before this runs, so a box without matplotlib still produces the data
+    and the plot can be regenerated later on any laptop.
     """
-    finite = [r for r in rows if not r["oom"]]
-    if not finite:
+    if not any(not r["oom"] for r in rows):
         print("no finite checkpoints recorded; skipping plot")
         return
     try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        import matplotlib  # noqa: F401
     except ImportError:
         print("matplotlib not installed; CSV written, plot skipped")
+        print(f"regenerate later with: python scripts/plot_oom_curve.py "
+              f"--csv {args.csv} --plot {args.plot}")
         return
 
-    seq = [r["seq_len"] for r in finite]
-    predicted = [r["predicted_mib"] for r in finite]
-    measured = [r["measured_reserved_mib"] for r in finite]
-
-    # detect the card so the plot labels itself instead of hardcoding one GPU.
-    # this matters because the same script runs on the 3060 (the original
-    # comparison baseline) and on the 4060 Ti (the current box).
     dev_idx = torch.device(args.device).index or 0
     props = torch.cuda.get_device_properties(dev_idx)
-    card_name = props.name
-    card_total_mib = props.total_memory / (1024**2)
-    card_gb = round(card_total_mib / 1024)
+    card_gib = round(props.total_memory / (1024 ** 3))
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(seq, predicted, "--", label="predicted: weights + analytical KV", color="tab:blue")
-    ax.plot(seq, measured, "-o", label="measured peak reserved", color="tab:red", markersize=3)
-    ax.axhline(card_total_mib, color="gray", ls=":", lw=1, label=f"{card_gb} GB card")
-    if oom_seq is not None:
-        ax.axvline(oom_seq, color="black", ls="-.", lw=1, label=f"OOM ~{oom_seq} tok")
+    from plot_oom_curve import render
 
-    ax.set_xlabel("context length (tokens)")
-    ax.set_ylabel("GPU memory (MiB)")
-    ax.set_title(
-        f"KV cache hits the wall: Qwen2.5-1.5B fp16, {card_name} {card_gb}GB, HF transformers\n"
-        "grown by decode (1 token/step), so peak = weights + KV + tiny constant"
-    )
-    ax.legend(loc="upper left", fontsize=8)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(args.plot, dpi=130)
-    print(f"plot saved -> {args.plot}")
+    render(csv_path=args.csv, plot_path=args.plot, card_gib=card_gib)
 
 
 if __name__ == "__main__":
