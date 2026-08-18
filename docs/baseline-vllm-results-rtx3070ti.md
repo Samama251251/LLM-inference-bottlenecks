@@ -55,7 +55,7 @@ HF (measured):    32.7  ms/token ->  30.6 tok/s -> 94 GB/s -> 15.5% MBU
 
 Same card, same 608 GB/s, same slow Xeon, same 3.09 GB of weights to read.
 vLLM took decode from 15.5% to 77% MBU on identical hardware. The mechanism is
-exactly the one the HF baseline named: HF eager launches ~500 tiny kernels per
+exactly the one the HF baseline named: HF eager launches 1,282 tiny kernels per
 token and the slow CPU cannot issue them fast enough, so the GPU stalls between
 launches. vLLM captures the whole decode step into one CUDA graph (record once,
 replay with a single launch) and fuses kernels, so the CPU stops being the
@@ -123,7 +123,7 @@ matters only for the OOM contrast and for throughput under load.
 ## Key learnings
 
 - **vLLM removed ~5x of overhead on identical hardware** (15.5% -> 77% MBU) by
-  replacing ~500 per-token kernel launches with one CUDA-graph replay plus fused
+  replacing 1,282 per-token kernel launches with one CUDA-graph replay plus fused
   kernels. The card did not change; the CPU stopped being the bottleneck.
 - **vLLM's batch-1 decode win is not a fixed multiplier, it equals the host
   overhead removed.** Slow-host boxes show bigger wins: 4.97x here vs a measured

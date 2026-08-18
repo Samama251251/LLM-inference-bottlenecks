@@ -84,7 +84,7 @@ measured 30.6 tok/s    = 32.7 ms/token -> 94 GB/s achieved -> 15.5% MBU
 
 15.5% MBU means the 608 GB/s sits almost entirely idle. Decompose the 32.7 ms:
 ~5 ms is the real weight read, the other **~27.6 ms is overhead**. That overhead
-is the CPU. One decode step in eager HF is ~500 separate CUDA kernels (28 layers
+is the CPU. One decode step in eager HF is 1,282 separate CUDA kernels (28 layers
 x ~15-20 kernels each: norms, projections, RoPE, attention, SiLU, residuals,
 plus the LM head). At batch 1 each kernel is a vector-times-matrix that the GPU
 finishes in a few microseconds, but the CPU needs ~5-15 us just to push each
@@ -113,7 +113,7 @@ decode_tok/s = MBU x memory_bandwidth / weight_bytes
 
 MBU is set by how much host overhead the engine carries; bandwidth is set by the
 card. A fast card behind a slow host (this box under HF) wastes its bandwidth.
-The fix is to stop launching ~500 kernels per token, which is exactly what vLLM
+The fix is to stop launching 1,282 kernels per token, which is exactly what vLLM
 does (see `baseline-vllm-results-rtx3070ti.md`: same card, same Xeon, 77% MBU).
 
 ## A prediction that was wrong, and why
@@ -130,7 +130,7 @@ bandwidth. That distinction is the result.
 
 - **Decode on this box is launch-bound, not bandwidth-bound.** At 15.5% MBU the
   608 GB/s bus is mostly idle; decode speed is capped by how fast the slow Xeon
-  can issue ~500 kernels per token, not by the card.
+  can issue 1,282 kernels per token, not by the card.
 - **A faster GPU does not help a launch-bound baseline.** The 3070 Ti is slower
   at HF decode than the 4060 Ti despite 2x the bandwidth, because the bottleneck
   was the host CPU, which is slower here, not the GPU.
