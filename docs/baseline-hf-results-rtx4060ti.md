@@ -70,7 +70,8 @@ MBU      = 70.1 / 93.3 = 75.2%
 The eager HuggingFace loop leaves only **3.54 ms per token** of host overhead on
 top of the unavoidable 10.72 ms weight read. That is the number to carry
 forward. Every decode token re-enters Python, walks all 28 layers, and dispatches
-on the order of 500 kernels, and on this box all of that fits into 3.5 ms.
+1,282 kernels (measured on the RTX 3070 with torch.profiler, see
+`baseline-results-rtx3070.md`), and on this box all of that fits into 3.5 ms.
 
 The comparison that makes the point is the same code, same model, same
 transformers version, on the 3070 Ti box:
@@ -144,4 +145,6 @@ See `results/rtx4060ti/prefill_curve.png`.
 - 2945 MiB of weights leaves about 5 GB on this 8GB card for KV and activations.
   The OOM sweep crashes at ~66k tokens of context, and the measured growth rate
   is 2.21x the analytical KV prediction (see `results/rtx4060ti/oom_curve.png`).
-  That 2.21x is unexplained and is the phase's main open question.
+  That 2.21x is now explained: the KV cache itself is exactly the analytical
+  size, and the excess is a per-step reallocation transient that peak memory
+  captures and live memory does not. See `kv-cache-growth.md`.

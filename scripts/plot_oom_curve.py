@@ -166,7 +166,8 @@ def render(
     ax.annotate(
         f"measured growth is {ratio:.2f}x the analytical KV line\n"
         f"({measured_bpt:,.0f} B/token vs {args.kv_bytes_per_token:,} B/token);\n"
-        f"the gap is unexplained, see docs",
+        f"the cache itself is exactly 1.00x; the excess is a\n"
+        f"per-step reallocation transient (see kv-cache-growth.md)",
         xy=(0.97, 0.06), xycoords="axes fraction", ha="right", fontsize=8.5,
         bbox=dict(boxstyle="round", fc="lightyellow", ec="gray", alpha=0.9),
     )
