@@ -96,6 +96,7 @@ def render(
     plot_path: str,
     card_gib: int | None = None,
     kv_bytes_per_token: int = DEFAULT_KV_BYTES_PER_TOKEN,
+    annotate: bool = True,
 ) -> None:
     """Read a sweep CSV and write the figure. Importable so oom_sweep.py can
     call it directly after a run instead of keeping a second copy of the
@@ -104,6 +105,9 @@ def render(
         csv=csv_path, plot=plot_path, card_gib=card_gib,
         kv_bytes_per_token=kv_bytes_per_token,
     )
+    # annotate=False draws the same data without the box that explains the gap.
+    # The writeup that introduces this figure builds to that explanation, so the
+    # figure must not give it away before the reader gets there.
     rows = load_rows(args.csv)
     ok = [r for r in rows if r["oom"] == "False"]
     crashed = [r for r in rows if r["oom"] == "True"]
@@ -163,14 +167,22 @@ def render(
 
     # State the headline gap on the figure rather than in a caption somewhere
     # else, so the plot cannot drift away from its own explanation.
-    ax.annotate(
-        f"measured growth is {ratio:.2f}x the analytical KV line\n"
-        f"({measured_bpt:,.0f} B/token vs {args.kv_bytes_per_token:,} B/token);\n"
-        f"the cache itself is exactly 1.00x; the excess is a\n"
-        f"per-step reallocation transient (see kv-cache-growth.md)",
-        xy=(0.97, 0.06), xycoords="axes fraction", ha="right", fontsize=8.5,
-        bbox=dict(boxstyle="round", fc="lightyellow", ec="gray", alpha=0.9),
-    )
+    if annotate:
+        ax.annotate(
+            f"measured growth is {ratio:.2f}x the analytical KV line\n"
+            f"({measured_bpt:,.0f} B/token vs {args.kv_bytes_per_token:,} B/token);\n"
+            f"the cache itself is exactly 1.00x; the excess is a\n"
+            f"per-step reallocation transient (see kv-cache-growth.md)",
+            xy=(0.97, 0.06), xycoords="axes fraction", ha="right", fontsize=8.5,
+            bbox=dict(boxstyle="round", fc="lightyellow", ec="gray", alpha=0.9),
+        )
+    else:
+        ax.annotate(
+            f"measured growth is {ratio:.2f}x the analytical KV line\n"
+            f"({measured_bpt:,.0f} B/token vs {args.kv_bytes_per_token:,} B/token)",
+            xy=(0.97, 0.06), xycoords="axes fraction", ha="right", fontsize=8.5,
+            bbox=dict(boxstyle="round", fc="lightyellow", ec="gray", alpha=0.9),
+        )
 
     rates = [float(r["decode_tokens_per_sec"]) for r in ok]
     pts = [(c, v) for c, v in zip(ctx, rates) if v > 0]
@@ -218,8 +230,12 @@ def main() -> None:
                     help="card capacity; inferred from gpu_name when omitted")
     ap.add_argument("--kv-bytes-per-token", type=int,
                     default=DEFAULT_KV_BYTES_PER_TOKEN)
+    ap.add_argument("--no-annotate", action="store_true",
+                    help="omit the box explaining the gap, for use in writing "
+                         "that builds to that explanation itself")
     a = ap.parse_args()
-    render(a.csv, a.plot, a.card_gib, a.kv_bytes_per_token)
+    render(a.csv, a.plot, a.card_gib, a.kv_bytes_per_token,
+           annotate=not a.no_annotate)
 
 
 if __name__ == "__main__":
