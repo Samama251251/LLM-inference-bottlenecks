@@ -5,259 +5,281 @@ a card with more bandwidth to decode faster. It did not: an RTX 3070 Ti with 608
 GB/s decoded Qwen2.5-1.5B at 30.56 tokens per second, while an RTX 4060 Ti with
 288 GB/s reached 70.09.
 
-The reason is that memory bandwidth is not the only thing setting the pace.
-Generating each token involves CPU-side dispatch and orchestration, and on these
-systems, that CPU overhead became a significant part of the critical path. The
-4060 Ti system had a substantially faster CPU than the 3070 Ti system, and in
-this case that mattered more than the difference in GPU memory bandwidth. With
-the hardware untouched and only the CPU-GPU handoff changed, decoding got 1.687x
-faster.
+The three-card comparison didn't tell me why. But it did show that memory
+bandwidth alone couldn't explain the result. On the system I investigated,
+host-side dispatch became a significant part of the critical path for batch-1
+eager decoding. With the hardware untouched, capturing the decode step as a CUDA
+graph increased throughput by 1.687x in the controlled comparison.
 
 ## The thing that did not make sense
 
-I have run the same script on three rented single-GPU boxes. Same model, same
-prompt length, same number of generated tokens, same batch size of 1, plain
-HuggingFace `transformers` in eager mode each time.
+I ran the same script on three rented single-GPU machines: same model, same
+prompt length, same number of generated tokens, same batch size of 1, and plain
+HuggingFace `transformers` in eager mode.
 
-| card | spec bandwidth | HF decode | host CPU | MBU |
+| GPU | Bandwidth | Decode | Host CPU | MBU |
 | --- | --- | --- | --- | --- |
 | RTX 4060 Ti | 288 GB/s | 70.09 tok/s | i7-11700 | 75.2% |
 | RTX 3070 | 448 GB/s | 59.75 tok/s | Ryzen 7 3700X | 41.2% |
 | RTX 3070 Ti | 608 GB/s | 30.56 tok/s | Xeon E5-2680 v4 | 15.5% |
 
-MBU is the share of the card's bandwidth the loop actually used: tokens per
-second times 3.088 GB of weights per token, over spec bandwidth.
+MBU estimates what fraction of the GPU's specified memory bandwidth would be
+needed to stream the model weights once per generated token at the measured
+decode rate. I calculate it as 3.088 GB of weights × tokens/s, divided by the
+GPU's specified bandwidth.
 
-The order in those first two columns is exactly reversed. More bandwidth, less
-throughput, every step of the way. The 3070 Ti has 2.11x the bandwidth of the
-4060 Ti and 0.44x the throughput. What does line up is the CPU: the newest host
-is fastest, the 2016 Xeon is slowest, and the 2019 Ryzen sits between them.
+The result was almost exactly backwards from what I expected.
 
-Why that looked wrong is worth saying plainly. Generating one token means reading
-every weight in the model, once. Nothing else in the step moves anywhere near
-that much data, so the speed limit is how fast the card can pull those bytes out
-of its memory, and a card with more bandwidth should pull them faster. MBU is
-just the fraction of that limit a run actually reaches. The low numbers in the
-last column are saying that the cards with the most bandwidth spent most of their
-time not using it. Something other than the memory system was setting the pace.
+The 3070 Ti has 2.11× the memory bandwidth of the 4060 Ti, but produces only
+0.44× as many tokens per second. And the GPU with the lowest specified bandwidth
+is the one whose measured throughput implies the highest fraction of its
+theoretical bandwidth.
 
-![HuggingFace decode throughput against GPU memory bandwidth for three rented boxes, showing throughput falling as bandwidth rises](../results/bandwidth_inversion.png)
+![HuggingFace decode throughput against GPU memory bandwidth for three rented machines, with throughput falling as bandwidth rises](../results/bandwidth_inversion.png)
 
 *Decode throughput against vendor memory bandwidth, batch 1, eager transformers.
-Decode rates are medians from the committed baseline CSVs. Each point is a
-different box, so CPU, GPU and torch build all change together; this is the
-observation that motivated an experiment, not evidence of cause. Caveats in full
-at the end.*
+Each point is a different machine, so this is an observation, not a controlled
+comparison.*
 
-Each row is a different machine, so the CPU, the GPU and the torch and CUDA build
-all change together. That makes this a correlation worth chasing, not a
-demonstration that the CPU is responsible.
+That was strange because the usual mental model for batch-1 decode is fairly
+simple: generating a token requires streaming the model weights through GPU
+memory, so memory bandwidth should impose a strong ceiling on throughput. And yet
+these runs were nowhere near that ceiling. On the 3070 Ti, the measured
+throughput corresponds to only 15.5% of its specified bandwidth. The workload
+was clearly not saturating the GPU's available memory bandwidth. Something else
+was setting the pace.
 
-So I rented one box, the RTX 3070 in that table, and tried to test the idea
-properly. Every measurement in the rest of this post comes from that machine. If
-CPU-side dispatch is what limits eager decoding, then cutting the number of times
-the CPU has to hand work to the GPU per token, with nothing about the hardware
-changed, should recover the missing throughput.
+The CPU was the next obvious suspect. The three machines had very different host
+configurations, including their CPUs, and their decode speeds happened to move in
+the same direction: the 4060 Ti system was fastest, the 3070 was in the middle,
+and the 3070 Ti system was slowest.
+
+But there was an obvious problem with that hypothesis: I had changed everything
+at once. Different GPU. Different CPU. Different PyTorch/CUDA environment.
+Different machine. I couldn't look at this table and say, "the CPU caused the
+difference." I needed to hold everything else constant.
+
+So I picked the RTX 3070, the middle row of the table, and used it for the rest
+of the investigation. Every measurement from here on comes from that one machine.
+If host-side dispatch really was limiting eager decode, then reducing the amount
+of host work needed to submit GPU work should make the same GPU decode faster.
+
+That was the experiment.
 
 ## Setup
 
-One NVIDIA RTX 3070, 8192 MiB, compute capability 8.6, 46 SMs, rented on
-Vast.ai. PyTorch reports 7840 MiB of that as usable. Host is an AMD Ryzen 7
-3700X with 16 logical cores, and the listing allocated 5.3 of 16 to my instance,
-which matters later.
+For the controlled experiments, I used a single RTX 3070 machine rented from
+Vast.ai. The GPU has 8 GiB of VRAM, 448 GB/s of specified memory bandwidth, 46
+SMs, and compute capability 8.6. The host CPU is an AMD Ryzen 7 3700X, with 5.3
+of its 16 logical cores allocated to my instance.
 
-Model is Qwen2.5-1.5B in fp16: 28 layers, 12 query heads, 2 key/value heads,
-head dimension 128. Weights sit at 2945.29 MiB resident, or 3.088 GB, and that
-came out byte-identical on all three cards, which is how I check the model loaded
-the same way everywhere.
+The model is Qwen2.5-1.5B running in FP16. It has 28 transformer layers, 12 query
+heads, 2 KV heads, and a head dimension of 128. The model weights occupy 2,945.29
+MiB in GPU memory, or about 3.088 GB of weight data.
 
-Two Python environments, because vLLM pins its own torch and installing it
-alongside the baseline would replace the torch the baseline was measured on. The
-HuggingFace side ran torch 2.11.0+cu128 with transformers 4.46.3. vLLM 0.24.0
-ran in a separate venv on torch 2.11.0+cu130.
-
-Every run used a 512-token prompt and generated 255 tokens greedily at batch 1.
-Prefill and decode are timed separately, never blended. I call
-`torch.cuda.synchronize()` before reading any timer, discard a warmup generation,
-and reset peak memory counters before each measured run.
+Every benchmark uses a 512-token prompt, 255 generated tokens, greedy decoding,
+and batch size 1. I measure prefill and decode separately, synchronize the GPU
+before reading timers, discard one warmup generation, and reset peak-memory
+counters before each run. The software stack is PyTorch 2.11.0+cu128 with
+Transformers 4.46.3.
 
 ## Finding the real ceiling first
 
-The whole argument is a ratio, so I measured the denominator instead of trusting
-it.
+Before looking for another bottleneck, I wanted to establish how fast the RTX
+3070 could decode if memory bandwidth were the only thing limiting it.
 
-The RTX 3070 is specified at 448 GB/s. The Vast.ai dashboard reported 385.8
-GB/s, and earlier in the same session it had reported 179.6 GB/s for the same
-machine, which told me the dashboard figure moves with host load. So I measured
-it: a large contiguous fp16 copy, best of 20 runs, gave 402.6 GB/s of combined
-read and write traffic, 90% of spec.
+The card is specified at 448 GB/s. I initially looked at the bandwidth reported
+by the hosting provider, but the number wasn't stable: Vast.ai reported 385.8
+GB/s at one point and 179.6 GB/s earlier in the same session on the same machine.
+That made it a poor number to use as a baseline.
 
-At 402.6 GB/s, streaming 3.088 GB of weights takes 7.671 ms, so nothing can
-decode faster than 130.4 tokens per second at batch 1 on this card.
+So I measured the bandwidth myself. A large contiguous FP16 copy, using the best
+result from 20 runs, sustained 402.6 GB/s of combined read and write traffic,
+about 90% of the card's specified bandwidth.
 
-Measured HuggingFace decode was 59.75 tokens per second, median of five runs
-(55.07, 59.76, 58.03, 60.25, 59.75). That is 45.8% of the ceiling. Per token it
-spends 16.74 ms where only 7.671 ms is unavoidable, leaving 9.07 ms of something
-else.
+The model has 3.088 GB of weights resident in memory. If those weights have to be
+streamed once for every generated token, then at 402.6 GB/s, streaming them would
+take:
 
-The five runs span 9.4%, the first the slowest at 55.07 and the rest between
-58.03 and 60.25. I ran five rather than two because I shared the CPU with other
-tenants. vLLM on the same box gave 115.96, 115.57 and 115.84, a spread of 0.34%,
-so the noise sits in the eager path, not the machine.
+$$
+\frac{3.088\ \text{GB}}{402.6\ \text{GB/s}} = 7.671\ \text{ms}
+$$
 
-## Removing the CPU work, hardware unchanged
+Under the assumption that each generated token requires streaming those 3.088 GB
+of weights once, that gives a useful weight-streaming bound. At 402.6 GB/s the
+weight read alone would take about 7.67 ms per token, corresponding to roughly
+130.4 tokens per second. Actual inference can only be slower once the other work
+in the decode step is included.
 
-Producing one token in eager mode walks all 28 layers and submits a long series
-of small kernels to the GPU, one at a time. `torch.compile` with
-`mode="reduce-overhead"` captures that step once and replays it as a CUDA graph,
-so the whole step is submitted in a single call.
+The actual HuggingFace decode rate was 59.75 tokens per second, the median of
+five runs: 55.07, 59.76, 58.03, 60.25, and 59.75 tok/s. That's 16.74 ms per
+token, more than twice the 7.671 ms it would take to stream the weights at the
+measured bandwidth.
 
-Both arms used a preallocated `StaticCache`. CUDA graphs need shapes that do not
-change, and a cache that grows by reallocation changes shape every token, so the
-compiled arm required it. I used it in the eager arm too so the only difference
-between the two was how work reaches the GPU.
+So each token had roughly 9.07 ms of additional time that couldn't be explained
+by the weight read alone.
 
-| arm | decode | ms/token | MBU | leftover per token |
+That gap was the number I cared about. If memory bandwidth was already capable of
+supporting ~130 tok/s, why was eager decoding only reaching ~60?
+
+I repeated the eager measurement five times because the instance shared its CPU
+with other tenants. The runs varied by 9.4%, with the first run being the slowest
+at 55.07 tok/s and the remaining four between 58.03 and 60.25 tok/s.
+
+Now I had a concrete question to answer:
+
+What was consuming that extra ~9 ms per token?
+
+## Reducing host-side dispatch overhead, hardware unchanged
+
+If repeated host-side dispatch is a significant part of the problem, reducing the
+number of host submissions should recover some of the lost throughput.
+
+In eager mode, producing a token walks all 28 layers and submits a long sequence
+of small kernels to the GPU, one at a time as the Python code runs. `torch.compile`
+with `mode="reduce-overhead"` can capture that repeated execution and use CUDA
+graphs to reduce the cost of replaying it. In this experiment that means the host
+no longer has to submit the same long sequence of individual kernel launches on
+every decode step.
+
+Both arms used a preallocated `StaticCache`. CUDA graphs require the captured
+execution to see stable shapes and memory addresses, and a dynamically growing
+cache can change layout or shapes between iterations, so the compiled path needed
+a fixed cache. I used the same cache in the eager path as well, holding the cache
+implementation constant while changing how the repeated decode work was captured
+and submitted.
+
+That is not a perfectly clean isolation of dispatch. `torch.compile` can also fuse
+operations and generate different kernels, so the compiled path may be doing
+device-side work differently too. What the comparison tests is whether a path that
+substantially reduces repeated host-side dispatch can recover the missing
+throughput.
+
+The controlled comparison is therefore not "eager HuggingFace against an
+optimised inference engine." It is the same HuggingFace workload, on the same
+GPU, with the same model and the same cache, with the repeated decode execution
+captured differently.
+
+| arm | decode | ms/token | MBU | time beyond weight-streaming bound |
 | --- | --- | --- | --- | --- |
 | eager | 54.33 tok/s | 18.41 | 41.68% | 10.73 ms |
 | compiled | 91.65 tok/s | 10.91 | 70.30% | 3.24 ms |
 
-1.687x, same card, same process, same model, same cache. Measured instead against
-the fastest eager configuration I had, the 59.75 tok/s baseline from earlier, the
-gain is 1.53x. The first number is the controlled comparison and the second is
-the honest one to quote against a normal setup; the gap between them is explained
-in "What I got wrong".
+That is 1.687x, on the same card, in the same process, with the same model and
+the same cache. Nothing about the hardware changed. Measured instead against the
+59.75 tok/s from the previous section, the fastest eager configuration I had, the
+gain is 1.53x.
 
-In this execution path GPU kernels are launched from the CPU side, and the GPU
-cannot execute a kernel until that work has been submitted to its command stream.
-In eager mode each operation is submitted separately as the Python code runs, so
-the submission cost is paid once per kernel. When kernels are long, that cost
-disappears into them. When kernels are short, the GPU can drain the work it has
-been given before more arrives, and it waits. A CUDA graph captures the sequence
-once and replays it as a single submission, so a whole decode step reaches the
-device without the host having to issue each launch again.
+The 1.687x figure is the controlled experiment. The 1.53x figure is the
+comparison against the fastest normal eager configuration. They answer different
+questions, so I report both.
 
-Prefill moved from 65.36 ms to 66.97 ms, so the compiled version was slightly
-slower there. That is what I would predict if the gain came from removing
-per-token dispatch cost. Prefill processes the whole prompt in one pass, so its
-kernels are large enough to keep the GPU busy on their own and there was no gap
-for graphs to close. Decode is the opposite shape: many short kernels, repeated
-once per token. That only one of the two phases moved is the part that convinced
-me the explanation fits.
+The mechanism is that GPU kernels in this execution path are launched from the
+CPU side, and the GPU cannot execute a kernel until that work has been submitted
+to its command stream. Submitting each kernel individually costs something on the
+host. When kernels are long, the launch and submission overhead is small
+compared with their execution time. When kernels are short, the GPU can finish
+the work already in its queue before the host has submitted enough additional
+work to keep it busy.
 
-![Per-token decode time on the RTX 3070, split into weight read, other GPU work, and idle time](../results/rtx3070/decode_budget.png)
+Prefill is the sanity check. It moved from 65.36 ms to 66.97 ms, slightly slower
+compiled than eager. That is what I would expect if the gain came from per-token
+submission cost: prefill processes the whole prompt in one pass, so its kernels
+are large enough to keep the GPU busy on their own, and there was no gap for
+graphs to close. Decode is the opposite shape, many short kernels repeated once
+per token.
 
-*Per-token decode time on the RTX 3070, in milliseconds. The GPU-busy figure was
-profiled on the eager path only and reused for the compiled bar, which is an
-assumption rather than a measurement. vLLM was never profiled, so its bar shows
-total wall time with the split left blank.*
+Only one of the two phases moved, and it was the one made of small repeated work.
 
 ## A second measurement of the same thing
 
-I profiled twelve steady-state decode steps with `torch.profiler`, counting only
-device-side kernels.
+The throughput result is consistent with a dispatch explanation, but it doesn't
+directly show the GPU waiting. So I profiled twelve steady-state decode steps
+with `torch.profiler`, counting only device-side kernels.
 
-One decode token launches 1282 CUDA kernels. Total GPU time across them is 10.806
-ms, so the average kernel runs for 8.429 microseconds. The largest single
-contributor is a `gemv2T_kernel_val` half-precision kernel, 57 launches per
-token totalling 5.019 ms.
+One decoded token launches 1,282 CUDA kernels. Their total device time is 10.806
+ms, which puts the average kernel at 8.429 microseconds. The largest single
+contributor is a `gemv2T_kernel_val` half-precision kernel, 57 launches per token
+totalling 5.019 ms.
 
-Put that next to the wall-clock numbers above:
+Now put the profiler next to the wall-clock numbers from the previous section:
 
-| arm | wall | GPU busy | GPU idle |
+| arm | wall time | device time | wall not spent on device work |
 | --- | --- | --- | --- |
-| eager | 18.41 ms | 10.806 ms | 7.60 ms (41%) |
-| compiled | 10.91 ms | 10.806 ms | 0.10 ms (1%) |
+| eager | 18.41 ms | 10.806 ms (profiled) | 7.60 ms (41%) |
+| compiled | 10.91 ms | not profiled | unknown |
 
-The compiled wall time lands within 0.1 ms of the GPU's own busy time. Two
-methods that share no code agree: eager decoding leaves the card waiting 41% of
-each token, and replaying the step as a graph closes that to roughly nothing.
+In eager mode the GPU was doing device work for about 10.8 ms, but the token took
+about 18.4 ms. That leaves roughly 7.6 ms of wall-clock time not accounted for by
+device-side kernel execution.
 
-Put the two profiler numbers side by side and the shape of the problem follows.
-1,282 kernels per token, each averaging 8.429 microseconds of device time. At that
-duration the per-launch submission cost is no longer small relative to the work
-itself, and a GPU that finishes an 8-microsecond kernel has nothing queued behind
-it until the host submits more.
+The compiled path takes 10.91 ms per token, which is only 0.1 ms above the
+10.806 ms of device time measured on the eager path. If the compiled path does a
+comparable amount of device-side work, there is very little room left for the
+idle time eager mode shows. I did not profile the compiled path, so that is an
+inference rather than a measurement, and `torch.compile` may well have changed
+the device work too.
 
-The conclusion I would defend is narrow. In this batch-1 eager decode workload,
-CPU-side dispatch overhead became large enough to prevent the GPU from staying
-busy. That is not the same as saying CPU overhead is always the bottleneck in LLM
-inference, and nothing here supports the general version. Batch size is what sets
-the kernel duration, and batch 1 makes those kernels as short as they get.
+The wall-clock and profiler measurements point the same way. Eager decoding
+spends about 7.6 ms per token outside device-side kernel execution, and the
+compiled path cuts total token time to 10.91 ms. I cannot attribute all of that
+reduction to eliminated GPU idle time, but the numbers are consistent with the
+dispatch hypothesis.
 
-My notes from earlier runs said "on the order of 500 kernels per token." That was
-a guess I made from the layer count. The measured number is 1282, and I have
-corrected it.
+![Per-token decode time on the RTX 3070, split into weight read, other GPU work, and idle time](../results/rtx3070/decode_budget_no_vllm.png)
+
+*Per-token decode time on the RTX 3070, in milliseconds. Only the eager bar is
+broken down, because only the eager path was profiled. The compiled bar shows
+total wall time with no split, since I did not measure how its time divides
+between device work and everything else.*
+
+The measurements give a plausible explanation for the shape of the problem. 1,282
+kernels per token, each averaging 8.429 microseconds of device time, is a very
+large number of very short operations. At that duration, host-side submission
+overhead can no longer be assumed negligible relative to execution time.
+
+I want to be careful about how far that generalises. What this supports is that in
+this batch-1 eager decode workload, host-side dispatch overhead was large enough
+to keep the GPU from staying busy. It does not show that host overhead is
+generally the bottleneck in LLM inference. The amount of work per kernel depends on several
+factors, including batch size and sequence length, and batch 1 minimises the
+parallel work available to many of these operations, which makes it a
+particularly favourable setting for host-side overhead to become visible.
 
 ## What I got wrong
 
-`StaticCache` is not free. Eager decoding with it ran at 54.33 tokens per second
-against 59.75 with the normal cache, about 9% slower. So 1.687x is the speedup
-within a controlled comparison, and against the fastest eager configuration I
-measured the honest number is 91.65 / 59.75 = 1.53x. I report both.
+Two things, in the order I found them.
 
-My first profiler build summed GPU time over every event that had any, which
+`StaticCache` is not free. Eager decode with it ran at 54.33 tok/s against 59.75
+with the normal cache, roughly 9% slower. So 1.687x is the speedup inside a
+controlled comparison where both arms carry that cost, and 1.53x is the honest
+number against the fastest eager setup I actually measured. Reporting only the
+first would overstate what you would see in practice.
+
+My first profiler run was wrong, and wrong in an obvious enough way that it
+caught itself. I summed device time across every event that reported any, which
 counted `aten::linear` wrapping `aten::matmul` wrapping `aten::mm` wrapping the
-kernel that actually ran. It reported 39.67 ms of GPU work inside a 7.37 ms step
-and a negative idle time. I filtered to device-side events only and measured wall
-clock directly instead of reconstructing it from nested spans.
+kernel that actually ran. It reported 39.67 ms of GPU work inside a 7.37 ms step,
+and therefore a negative idle time. I filtered to device-side events only and
+measured wall clock directly instead of reconstructing it from nested spans.
 
-I had been attributing the whole HuggingFace-to-vLLM gap to launch overhead, and
-the profiler shows that cannot be right. vLLM decodes a token in 8.63 ms, which is
-less than the 10.806 ms of device time the eager path spends on its kernels.
-Submitting less work cannot produce a token faster than the work itself takes, so
-vLLM must also be running cheaper kernels. I cannot say how much of its advantage
-is which, because I never profiled it.
+## Takeaway
 
-## What this does not show
+The surprising part of this experiment was not that memory bandwidth matters. It
+does. The surprising part was that, at batch 1, the RTX 3070 had enough measured
+memory bandwidth to stream its model weights at roughly 130 tokens per second,
+but eager HuggingFace decoding produced only about 60.
 
-The three-card table cannot establish that the CPU caused the inversion. Every
-row changes the CPU, the GPU, and the torch and CUDA build at the same time, so
-nothing in it isolates one variable. The controlled result is the single-box
-comparison, and even that shows only that per-token dispatch cost 7.60 ms on this
-particular machine.
+The missing time was not explained by device-side kernel execution. On this
+machine, roughly 7.6 ms of every 18.4 ms decode step was not accounted for by
+profiled CUDA kernel time. The controlled experiment is consistent with much of
+that gap coming from host-side dispatch and synchronization overhead, though I
+did not measure the compiled path's device timeline directly. Capturing the
+repeated decode step with CUDA graphs brought throughput to 91.65 tok/s without
+changing the hardware.
 
-The sampling behind that table is uneven. The RTX 3070 figure is a median of five
-runs and the 4060 Ti of two, but the 3070 Ti is a single run with no repeat, so I
-have no spread for it at all. The host CPU is also only recorded in the result
-file for the 3070 row; I added a `cpu_model` field to the logging partway through
-this work, so the other two CPUs come from notes I wrote when I rented those
-boxes rather than from the data.
-
-MBU denominators are inconsistent. I measured achievable bandwidth only on the
-RTX 3070, at 402.6 GB/s against a 448 GB/s spec. The other two rows divide by
-vendor spec, which understates their MBU by roughly the 10% gap I measured on the
-one card where I checked.
-
-Everything here is batch 1, one model, one prompt length. Batch 1 is the case
-where per-launch cost matters most, because it makes the GPU work per kernel as
-small as it gets. None of this says anything about throughput under load.
-
-The instance had 5.3 of 16 logical cores allocated, so another tenant's work
-could have moved my eager numbers, and the 9.4% spread across five runs is
-consistent with that. The vLLM and compiled paths were far more stable, which is
-what I would expect if the noise enters through host-side work, though I did not
-test that directly.
-
-vLLM was never profiled. Its throughput is measured, but the split between fewer
-launches and cheaper kernels is not, so any claim about why it is fastest would
-be inference rather than measurement.
-
-## The part I cannot explain yet
-
-vLLM decoded at 115.84 tokens per second, 8.63 ms per token, against 91.65 and
-10.91 ms for the compiled HuggingFace path. Both replay the step as a graph, so
-launch overhead cannot be what separates them. The profiler measured 10.806 ms of
-GPU time for the eager path, and vLLM's entire token takes less than that, which
-means its kernels are doing the same math with less work. I do not know how that
-2.28 ms splits between fused kernels, a better attention implementation, and
-something I have not thought of, because I never profiled vLLM. That is the next
-run.
-
-The larger open question is whether any of this survives batching. Batch 1 is the
-friendliest possible case for this effect: the work per kernel is as small as it
-gets, so the cost of asking for it looms largest. On another card I measured vLLM
-reaching 5,354 tokens per second at batch 128, and at that size the GPU has
-enough work per step that the host has time to keep up. If the dispatch wall
-disappears under load, then what I measured here is a fact about single-stream
-latency and not about serving. Worth knowing which.
+I would not generalize that into "CPU is the bottleneck in LLM inference." The
+result is narrower and, to me, more interesting: when batch-1 decoding produces
+thousands of tiny GPU operations, the host can become part of the performance
+problem. More GPU bandwidth doesn't help if the GPU is spending a substantial
+fraction of each decode step waiting for the host to submit more work.

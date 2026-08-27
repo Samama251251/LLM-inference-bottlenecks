@@ -34,6 +34,9 @@ def main() -> None:
     ap.add_argument("--profile", default="results/rtx3070/decode_profile.json")
     ap.add_argument("--vllm", default="results/rtx3070/baseline_vllm.csv")
     ap.add_argument("--plot", required=True)
+    ap.add_argument("--no-vllm", action="store_true",
+                    help="draw only the eager and compiled arms, for writing "
+                         "that does not carry the vLLM comparison")
     a = ap.parse_args()
 
     dp = list(csv.DictReader(open(a.dispatch)))
@@ -53,22 +56,32 @@ def main() -> None:
 
     labels = ["eager\n(StaticCache)", "torch.compile\n(CUDA graphs)", "vLLM 0.24.0"]
     walls = [wall("eager"), wall("compiled"), vllm_wall]
-    reads = [floor, floor, floor]
-    others = [other_gpu, other_gpu, None]
-    idles = [walls[0] - busy, walls[1] - busy, None]
+    if a.no_vllm:
+        labels, walls = labels[:2], walls[:2]
+    reads = [floor] * len(walls)
+    others = [other_gpu, other_gpu]
+    idles = [walls[0] - busy, walls[1] - busy]
 
-    fig, ax = plt.subplots(figsize=(8, 5.2))
-    x = range(3)
+    fig, ax = plt.subplots(figsize=(8 if not a.no_vllm else 6.6, 5.2))
+    x = range(len(walls))
 
-    ax.bar(x, reads, 0.55, color="tab:blue", label=f"weight read ({floor:.2f} ms)")
-    ax.bar(x[:2], others[:2], 0.55, bottom=reads[:2], color="tab:cyan",
-           label=f"other GPU work ({other_gpu:.2f} ms, profiled on eager)")
-    ax.bar(x[:2], idles[:2], 0.55, bottom=[busy, busy], color="tab:red",
-           label="GPU idle, waiting on the host")
-    # vLLM was not profiled, so its bar is drawn as a single unsplit total.
-    ax.bar([2], [vllm_wall - floor], 0.55, bottom=[floor], color="lightgray",
-           hatch="//", edgecolor="gray",
-           label="vLLM: not profiled, split unknown")
+    # Only the eager bar is split. Its device time was profiled, so weight read,
+    # other GPU work, and the remainder are all grounded. The compiled path was
+    # never profiled, so drawing a split for it would show a number that was
+    # assumed rather than measured; it gets a single unsplit total instead.
+    ax.bar([0], [reads[0]], 0.55, color="tab:blue",
+           label=f"weight read ({floor:.2f} ms)")
+    ax.bar([0], [others[0]], 0.55, bottom=[reads[0]], color="tab:cyan",
+           label=f"other device work ({other_gpu:.2f} ms, profiled)")
+    ax.bar([0], [idles[0]], 0.55, bottom=[busy], color="tab:red",
+           label="wall time not spent on device work")
+    ax.bar([1], [walls[1]], 0.55, color="lightgray", hatch="//",
+           edgecolor="gray", label="device/host split not measured")
+    if not a.no_vllm:
+        # vLLM was not profiled, so its bar is drawn as a single unsplit total.
+        ax.bar([2], [vllm_wall - floor], 0.55, bottom=[floor], color="lightgray",
+               hatch="//", edgecolor="gray",
+               label="vLLM: not profiled, split unknown")
 
     for i, w in enumerate(walls):
         ax.text(i, w + 0.35, f"{w:.2f} ms", ha="center", fontsize=10)

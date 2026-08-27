@@ -156,8 +156,11 @@ def render(
                    label=f"CUDA OOM at ~{oom_ctx:,} tokens")
 
     ax.set_ylabel("GPU memory (MiB)")
+    # "Peak memory", not "the KV cache": the cache itself measures exactly the
+    # analytical size, and it is peak that carries the extra growth. Saying
+    # otherwise is the misreading this figure originally invited.
     ax.set_title(
-        f"The KV cache hits the wall, {ratio:.2f}x faster than the math predicts\n"
+        f"Peak memory grows {ratio:.2f}x faster than the KV-cache formula predicts\n"
         f"Qwen2.5-1.5B fp16, {gpu}, HF transformers, grown by decode (1 token/step)",
         fontsize=11,
     )
